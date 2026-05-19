@@ -22,21 +22,26 @@ Every new feature or iteration goes through four stages in order. No stage is sk
 PRD  →  Architect  →  Orchestrator  →  Test Runner
 ```
 
+We previously had a dedicated researcher stage in front of the architect. We have folded it into the architect for now to keep the pipeline lean. If features get complex enough that the architect's own codebase scan starts hurting plan quality or context budget, we add the researcher back as a separate stage.
+
 ### Stage 1 — PRD
 
-The product manager (Sören) and Claude iterate on a PRD in conversation until it is signed off. When it is ready, it is saved to `prds/feature-name.md` using the standard template.
+The product manager (Sören) and Claude iterate on a PRD in conversation until it is signed off. The PRD is a **product document only** — it captures what to build, for whom, and why. It may include soft decisions (expected scale, user counts, frequency of actions) but no technical implementation detail.
 
-- Template: [workflow/templates/prd-template.md](workflow/templates/prd-template.md)
-- Output goes to: `prds/`
-- A PRD is done when: problem, user stories, acceptance criteria, and out-of-scope are all agreed
+When UX, design, or user journey decisions need to inform the PRD, Claude invokes the **UX Research skill** during the conversation. The output of that research gets referenced inside the PRD itself — it does not live in a separate pipeline stage.
+
+- Output goes to: `prds/feature-name.md`
+- A PRD is done when: problem, user stories, acceptance criteria, out-of-scope, and any relevant design/UX references are all agreed
 
 **Do not move to the architect stage until the PRD is explicitly signed off.**
 
 ### Stage 2 — Architect
 
-An architect agent reads the signed-off PRD and the current codebase. It produces a technical implementation plan with a chunked, ordered task list. It does not write any code.
+The architect agent reads the signed-off PRD, scans the existing codebase to understand what is affected, and produces a technical implementation plan with a chunked, ordered task list. It does not write feature code.
 
-- Architect prompt: [workflow/prompts/architect.md](workflow/prompts/architect.md)
+The architect's own research is internal only — no external sources. It maps the files, modules, and patterns the feature touches, flags dependencies and risks, and resolves the open technical questions itself rather than passing them down to the developer.
+
+- Agent definition: [.claude/agents/architect.md](.claude/agents/architect.md)
 - Output goes to: `tasks/feature-name-tasks.md`
 - Architecture decisions are recorded in: [ARCHITECTURE.md](ARCHITECTURE.md)
 - A task list is done when: every task is self-contained, has a clear input/output, and dependencies are flagged
@@ -45,17 +50,19 @@ An architect agent reads the signed-off PRD and the current codebase. It produce
 
 ### Stage 3 — Orchestrator (Claude)
 
-Claude reads the task list and dispatches sub-agents. Independent tasks run in parallel. Tasks with dependencies run sequentially. Each sub-agent gets a tight brief: one task, the relevant file context, and a pointer to the PRD for intent.
+Claude reads the task list and dispatches developer sub-agents. Independent tasks run in parallel. Tasks with dependencies run sequentially. Each sub-agent gets a tight brief: one task, the relevant file context, and a pointer to the PRD for intent.
 
-- Orchestrator guide: [workflow/prompts/orchestrator.md](workflow/prompts/orchestrator.md)
+- Agent definition: [.claude/agents/developer.md](.claude/agents/developer.md)
 - Sub-agents write code only within the scope of their assigned task
 - Sub-agents must not refactor, extend scope, or make architectural decisions
 
 ### Stage 4 — Test Runner
 
-After all sub-agent tasks complete, a test runner agent runs the test suite and reports results. If tests fail, the orchestrator decides whether to retry the failing task or escalate to the human.
+The test runner agent runs **once**, after every developer task has completed, against the fully assembled feature. It does not run per developer sub-agent. Running it mid-build would burn budget on a half-built feature, make failures hard to attribute, and tempt the test runner into fixing things (which it must not do).
 
-- Test runner prompt: [workflow/prompts/test-runner.md](workflow/prompts/test-runner.md)
+If tests fail, the orchestrator decides whether to retry the responsible task or escalate to the human.
+
+- Agent definition: [.claude/agents/test-runner.md](.claude/agents/test-runner.md)
 
 ---
 
@@ -66,20 +73,20 @@ After all sub-agent tasks complete, a test runner agent runs the test suite and 
 | `CLAUDE.md` (this file) | Operating manual — read first, always |
 | `PRODUCT_DEFINITION.md` | Product vision, target users, user journey, open questions |
 | `ARCHITECTURE.md` | Technical stack, patterns, constraints, decisions log |
-| `workflow/templates/prd-template.md` | Standard structure for every PRD |
-| `workflow/prompts/architect.md` | System prompt for the architect agent |
-| `workflow/prompts/orchestrator.md` | Orchestrator task dispatch guide |
-| `workflow/prompts/test-runner.md` | System prompt for the test runner agent |
-| `prds/` | One `.md` file per feature PRD — named `feature-name.md` |
-| `tasks/` | One `.md` file per task list — matches the PRD filename |
+| `.claude/skills/implement-prd/SKILL.md` | Build pipeline skill — orchestrator playbook for Stages 2–4. Invoke with `/implement-prd <feature-name>` once the PRD is signed off |
+| `.claude/agents/architect.md` | Architect agent — scans the codebase and produces the task list |
+| `.claude/agents/developer.md` | Developer agent — executes one task, writes code |
+| `.claude/agents/test-runner.md` | Test runner agent — runs suite, reports results |
+| `prds/` | One `.md` file per signed-off PRD |
+| `tasks/` | One `.md` task list per PRD — produced by architect agent |
 | `src/` | Application source code |
 
 ---
 
 ## Naming Conventions
 
-- PRD files: `prds/short-descriptive-name.md` (kebab-case, no dates in filename)
-- Task files: `tasks/short-descriptive-name-tasks.md` (same root as the PRD)
+- PRD files: `prds/feature-name.md` (kebab-case, no dates in filename)
+- Task files: `tasks/feature-name-tasks.md` (same root as the PRD)
 - Source code: decided per stack in ARCHITECTURE.md
 
 ---
@@ -92,7 +99,7 @@ After all sub-agent tasks complete, a test runner agent runs the test suite and 
 4. If something is ambiguous, surface it. Do not assume or invent.
 5. Do not skip stages. A PRD that has not been signed off does not go to the architect.
 6. Do not add features, refactor, or scope-creep beyond the assigned task.
-7. Tests are not optional. Stage 4 always runs.
+7. Tests are not optional. Stage 4 (test runner) always runs.
 8. **Never deploy to production** unless Sören explicitly asks for it in that message. "Let's ship it" is not explicit. "Deploy to prod now" is.
 
 ---
@@ -138,6 +145,8 @@ When escalating, Claude does not just ask the question — it brings a recommend
 - Is the scope right for one iteration, or should it be split?
 - Is there a simpler path to the same outcome?
 
+**Before setting up any workflow infrastructure** (agents, sub-agents, skills, hooks, plugins, MCP servers, or any Claude Code configuration): read the official Claude Code documentation first. Do not guess at capabilities or syntax. If needed, spawn a sub-agent specifically to research the documentation before proposing or implementing anything. The goal is to use the platform correctly, not to approximate it.
+
 ---
 
 ## Current Open Questions
@@ -154,8 +163,9 @@ Before any technical work begins, these must be resolved:
 
 These documents are referenced above but have not been created yet. They will be built in order:
 
-- [ ] `ARCHITECTURE.md`
-- [ ] `workflow/templates/prd-template.md`
-- [ ] `workflow/prompts/architect.md`
-- [ ] `workflow/prompts/orchestrator.md`
-- [ ] `workflow/prompts/test-runner.md`
+- [x] `ARCHITECTURE.md` (core framework signed off 2026-05-19: Next.js + TypeScript + Tailwind; rest of stack still proposed)
+- [x] `.claude/agents/architect.md`
+- [x] `.claude/agents/developer.md`
+- [x] `.claude/agents/test-runner.md`
+- [x] `.claude/skills/implement-prd/SKILL.md`
+- [ ] `.claude/skills/ux-research/SKILL.md`
